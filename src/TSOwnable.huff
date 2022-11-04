@@ -1,0 +1,104 @@
+// The stack works in a first in last out order
+#define function owner() view returns (address)
+#define function pendingOwner() view returns (address)
+#define function setPendingOwner(address) nonpayable returns ()
+#define function acceptOwnership() nonpayable returns ()
+
+#define constant OWNER_SLOT = FREE_STORAGE_POINTER()
+#define constant PENDING_OWNER_SLOT = FREE_STORAGE_POINTER()
+
+#define macro CONSTRUCTOR() = takes (0) returns (0) {
+    caller [OWNER_SLOT] sstore  // Store msg.sender as owner
+}
+
+#define macro OWNABLE_GET_OWNER() = takes(0) returns(0) {
+    [OWNER_SLOT] sload // Load owner address from storage and push it to the stack
+    0x00 mstore        // Store owner to memeory at index 0x00
+    0x20 0x00 return   // Exit context, return 0x20=32 bytes from memory, starting at memory index 0x00 
+}
+
+#define macro OWNABLE_GET_PENDING_OWNER() = takes (0) returns (0) {
+    [PENDING_OWNER_SLOT] sload
+    0x00 mstore
+    0x20 0x00 return
+}
+
+#define macro ADDRESS_MASK() = takes (1) returns (1) {
+    0x000000000000000000000000ffffffffffffffffffffffffffffffffffffffff
+    and
+}
+
+#define macro ACCESS_ONLY_OWNER() = takes(0) returns (0) {
+    [OWNER_SLOT] sload 
+    caller 
+    eq 
+    is_owner jumpi // jumpi opcode will jump to stack[0] if stack[1] > 0
+        0x00 0x00 revert
+    is_owner:
+}
+
+#define macro OWNABLE_SET_PENDING_OWNER() = takes (0) returns (0) {
+    ACCESS_ONLY_OWNER()
+
+    // Read argument and mask to address
+    0x04 calldataload ADDRESS_MASK()
+
+    // Revert if address equals owner
+    dup1 caller eq throw_error jumpi
+
+    // Store address as pending owner
+    [PENDING_OWNER_SLOT] sstore
+
+    stop
+    throw_error:
+        0x00 0x00 revert
+}
+
+#define macro ACCESS_ONLY_PENDING_OWNER() = takes (0) returns (0) {
+    [PENDING_OWNER_SLOT] sload 
+    caller 
+    eq 
+    is_pending_owner jumpi
+        0x00 0x00 revert
+    is_pending_owner:
+}
+
+#define macro OWNABLE_ACCEPT_OWNERSHIP() = takes (0) returns (0) {
+    // Authorize caller via the "modifier" macro
+    ACCESS_ONLY_PENDING_OWNER()
+
+    // Store msg.sender as owner
+    caller [OWNER_SLOT] sstore
+
+    // Clear pending owner
+    0x00 [PENDING_OWNER_SLOT] sstore
+
+    stop
+}
+
+
+#define macro MAIN() = takes (0) returns (0) {
+    // callvalue throw_error jumpi // Revert if eth send
+
+    0x00 calldataload 0xE0 shr // Get function signature
+
+    dup1 __FUNC_SIG(owner) eq get_owner jumpi
+    dup1 __FUNC_SIG(pendingOwner) eq get_pending_owner jumpi
+    dup1 __FUNC_SIG(setPendingOwner) eq set_pending_owner jumpi
+    dup1 __FUNC_SIG(acceptOwnership) eq accept_ownership jumpi
+
+
+    // throw_error:
+    //     0x00 0x00 revert
+
+    // If the function sig is not recognized then this
+    // is the default/fallback function.
+    get_owner:
+        OWNABLE_GET_OWNER()
+    get_pending_owner:
+        OWNABLE_GET_PENDING_OWNER()
+    set_pending_owner:
+        OWNABLE_SET_PENDING_OWNER()
+    accept_ownership:
+        OWNABLE_ACCEPT_OWNERSHIP()
+}

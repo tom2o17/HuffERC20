@@ -1,0 +1,41 @@
+// TODO: https://blog.merkleplant.xyz/posts/entering-the-huff-ecosystem
+
+/* Interface */
+#define function setAddress(address) nonpayable returns()
+#define function getAddress() view returns(uint256)
+
+#define constant VALUE_LOCATION = FREE_STORAGE_POINTER()
+
+/* Storage Slots */
+#define macro SET_ADDRESS() = takes(0) returns(0) {
+    0x04 calldataload   // [value]
+    [VALUE_LOCATION]    // [ptr, value]
+    sstore              // Store the value to state 
+}
+
+#define macro GET_ADDRESS() = takes(0) returns (0) {
+    // Load value from storage 
+    [VALUE_LOCATION]
+    sload
+
+    // Store value in memory 
+    0x00 mstore 
+
+    // Return value 
+    0x20 0x00 return 
+}
+
+#define macro MAIN() = takes (0) returns (0) {
+    // Identify which function is being called.
+    0x00 calldataload 0xE0 shr
+    dup1 __FUNC_SIG(setAddress) eq set jumpi
+    dup1 __FUNC_SIG(getAddress) eq get jumpi
+
+    0x00 0x00 revert
+
+    set:
+        SET_ADDRESS()
+    get:
+        GET_ADDRESS()
+
+}

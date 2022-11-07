@@ -5,9 +5,14 @@
 #define function pendingOwner() view returns (address)
 #define function mint(uint256) nonpayable returns ()
 #define function transfer(address, uint256) nonpayable returns ()
+#define function transferFrom(address, address, uint256) nonpayable returns ()
+#define function approve(address, uint256) nonpayable returns ()
+#define function allowance(address, address) view returns (uint256)
 #define function setPendingOwner(address) nonpayable returns ()
 #define function acceptOwnership() nonpayable returns ()
-
+#define function setName(string) nonpayable returns ()
+#define function name() view returns (string)
+#define function decimals() view returns (string)
 
 /*
 Memory map 
@@ -19,6 +24,13 @@ Memory map
 #define constant BALANCES_SLOT = 0x00
 #define constant OWNER_SLOT = 0x01
 #define constant TOTAL_SUPPLY_SLOT = 0x02
+#define constant ALLOWANCES_SLOT = 0x03
+#define constant NAME_SLOT = 0x04
+
+#define constant META_NAME = 0x546f6b656e000000000000000000000000000000000000000000000000000000
+#define constant META_NAME_LENGTH = 0x05
+
+
 
 
 #define macro CONSTRUCTOR() = takes (0) returns (0) {
@@ -63,32 +75,184 @@ Memory map
     0x20 0x00 return
 }
 
+#define macro SET_NAME() = takes(0) returns(0) {
+    0x04 calldataload
+    [NAME_SLOT]
+    sstore
+}
 
-#define macro TRANSFER() = takes(0) returns(0) {
-    // 0x24 calldataload
-    // caller
-    // 0x00
-    // mstore
-    // 0x40 0x00 sha3
-    // sload
-    // sub
-    // 0x40 0x00 sha3
-    // sstore
-    
-    // More efficient than computing the hash twice
+#define macro GET_NAME() = takes(0) returns(0) {
+    0x20 0x00 mstore                    // []
+    [META_NAME_LENGTH] 0x20 mstore      // []
+    [META_NAME] 0x40 mstore             // []
+    0x60 0x00 return                    // []
+}
+
+#define macro ALLOWANCE() = takes(0) returns(0) {
+    0x04 calldataload
+    ADDRESS_MASK()
+    0x00
+    mstore
+    [ALLOWANCES_SLOT]
+    0x20
+    mstore
+    0x40 0x00 sha3 
+    0x00 
+    mstore
     0x24 calldataload
-    caller
+    0x20
+    mstore
+    0x40 0x00 sha3
+    sload
+    0x00 
+    mstore
+    0x20 0x00 return
+}
+
+#define macro TRANSFER_FROM() = takes(0) returns(0) {
+    0x04 calldataload
+    ADDRESS_MASK()
     0x00
     mstore
     0x40 0x00 sha3
-    swap1
+
+    0x24 calldataload
+    ADDRESS_MASK()
+    0x00
+    mstore
+    0x40 0x00 sha3
+    
+    0x04 calldataload
+    ADDRESS_MASK()
+    0x00
+    mstore
+    [ALLOWANCES_SLOT]
+    0x20
+    mstore
+    0x40 0x00 sha3 
+    0x00 
+    mstore
+    0x24 calldataload
+    0x20
+    mstore
+    0x40 0x00 sha3
+    
+    0x44 calldataload
+    dup1   
+    dup3    
+    sload   
+    sub     
+    dup2    
+    sload   
     dup2
-    sload
-    sub
+    dup5
+    sstore
+
+    dup3
+    dup7
+    sload 
+    sub 
+    dup2
+    dup2
+    gt
+    dup2
+    dup2
+    eq 
+    or
+    pass2 jumpi
+        0x00 0x00 revert
+    pass2:
+    dup7        
+    sstore 
+    dup3                
+    sload               
+    0x44 calldataload
+    add                 
+    dup6
+    sstore
+}
+
+
+#define macro TRANSFER() = takes(0) returns(0) {
+    // More efficient than computing the hash twice
+    0x24 calldataload // [value]
+    caller            // [msg.sender, value]
+    0x00              // [0x00, msg.sender, value]
+    mstore            // [value]
+    0x40 0x00 sha3    // [key, value]
+    swap1             // [value, key]
+    dup2              // [key, value, key]
+    sload             // [balance, value, key]
+    dup2
+    dup2
+    gt                // [0|1, balance, value, key]
+    dup2
+    dup2
+    eq
+    or pass jumpi
+        0x00 0x00 revert
+    pass:
+    dup1              // [balance, balance, value, key]
+    swap2             // [value, balance, balance, key]
+    swap1             // [balance, value, balance, key]
+    sub               // [balance - value, balance, key]
+    dup3             // [key, balance - value]
+    sstore
+
+    // Increment the receiver
+    0x04 calldataload // [address(to)]
+    0x00              // [ 0x00, Address(to)]
+    mstore            // []
+    0x40 0x00 sha3    // [ key ]
+    dup1              // [key, key]
+    sload             // [balanceOf(address(to)), key]
+    0x24 calldataload // [value, balanceOf(address(to)), key]
+    add               // [value + balanceOf(address(to)), key]
+    swap1              
+    sstore
+}
+
+
+#define macro APPROVE() = takes(0) returns(0) {
+    // // Check that the approval is less than the balance
+    caller              // [msg.sender]
+    0x00                // [0x00, msg.sender]
+    mstore              // []
+    0x40 0x00 sha3      // [key]
+    sload               // [balanceOf()]
+    0x24 calldataload   // [value, balanceOf()]
+    dup2                // [balanceOf(), value, balanceOf()]
+    dup2                // [value, balanceOf(), value, balanceOf()]
+    lt                  // [0|1, value, balanceOf()] 
+    dup3                // [balanceOf(), 0|1, value, balanceOf()]
+    dup3                // [value, balanceOf(), 0|1, value, balanceOf()]
+    eq                  // [0|1, 0|1, value, balanceOf()]
+    or                  
+    pass jumpi
+        0x00 revert
+    pass:               // []
+    // Increment the users allowance
+    caller              // [msg.sender]
+    0x00                // [0x00, msg.sender]
+    mstore              // []
+    [ALLOWANCES_SLOT]   // [0x03]
+    0x20                //[0x20 , 0x03]
+    mstore              //[]
+    0x40 0x00 sha3      // [ key ]
+    0x00 
+    mstore              //[]
+    0x04 calldataload
+    ADDRESS_MASK()
+    0x20
+    mstore
+    0x40 0x00 sha3      // [ key2 ]
+
+    dup1                // [key2, key2]
+    sload               // [balancOf, key2]
+    0x24 calldataload   // [value, balanceOf, key2]
+    add                 // [value + balance, key2]
     swap1
     sstore
-    // We have decremented their balance
-
 }
 
 
@@ -105,15 +269,7 @@ Memory map
     swap1
     sstore
 
-    // // Increment balance of TS
-    // [TOTAL_SUPPLY_SLOT] // [0x02]
-    // dup1                // [0x02, 0x02]
-    // sload               // [Ts val, 0x02 ]
-    // 0x04 calldataload   //[value, TS val, 0x02] 
-    // add                 // [new TS, 0x02]
-    // swap1
-    // sstore
-    
+ 
     // More efficient solution
     // Increment balance of TS
     [TOTAL_SUPPLY_SLOT] // [0x02]
@@ -123,6 +279,7 @@ Memory map
     [TOTAL_SUPPLY_SLOT]
     sstore
 }
+
 
 
 
@@ -136,12 +293,19 @@ Memory map
     dup1 __FUNC_SIG(mint) eq mint jumpi
     dup1 __FUNC_SIG(totalSupply) eq total_supply jumpi
     dup1 __FUNC_SIG(transfer) eq transfer jumpi
+    dup1 __FUNC_SIG(approve) eq approve jumpi
+    dup1 __FUNC_SIG(allowance) eq allowance jumpi
+    dup1 __FUNC_SIG(transferFrom) eq transferFrom jumpi
+    dup1 __FUNC_SIG(setName) eq set_name jumpi
+    dup1 __FUNC_SIG(name) eq get_name jumpi
+    dup1 __FUNC_SIG(decimals) eq get_decimals jumpi
 
-    // throw_error:
-    //     0x00 0x00 revert
+    throw_error:
+        0x00 0x00 revert
 
     // If the function sig is not recognized then this
     // is the default/fallback function.
+    TRANSFER_FROM()
     get_owner:
         OWNABLE_GET_OWNER()
     get_balance:
@@ -153,4 +317,16 @@ Memory map
         TOTAL_SUPPLY()
     transfer:
         TRANSFER()
+    approve:
+        APPROVE()
+    allowance:
+        ALLOWANCE()
+    transferFrom:
+        TRANSFER_FROM()
+    set_name:
+        SET_NAME()
+    get_name:
+        GET_NAME()
+    get_decimals:
+        // GET_DECIMALS()
 }

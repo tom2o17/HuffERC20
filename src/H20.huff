@@ -2,17 +2,12 @@
 #define function owner() view returns (address)
 #define function balanceOf(address) view returns (uint256)
 #define function totalSupply() view returns (uint256)
-#define function pendingOwner() view returns (address)
 #define function mint(uint256) nonpayable returns ()
 #define function transfer(address, uint256) nonpayable returns ()
 #define function transferFrom(address, address, uint256) nonpayable returns ()
 #define function approve(address, uint256) nonpayable returns ()
 #define function allowance(address, address) view returns (uint256)
-#define function setPendingOwner(address) nonpayable returns ()
-#define function acceptOwnership() nonpayable returns ()
-#define function setName(string) nonpayable returns ()
 #define function name() view returns (string)
-#define function decimals() view returns (string)
 
 /*
 Memory map 
@@ -25,12 +20,11 @@ Memory map
 #define constant OWNER_SLOT = 0x01
 #define constant TOTAL_SUPPLY_SLOT = 0x02
 #define constant ALLOWANCES_SLOT = 0x03
-#define constant NAME_SLOT = 0x04
 
-#define constant META_NAME = 0x546f6b656e000000000000000000000000000000000000000000000000000000
-#define constant META_NAME_LENGTH = 0x05
+#define constant NAME = 0x546f6b656e000000000000000000000000000000000000000000000000000000
+#define constant NAME_LENGTH = 0x05
 
-
+// TODO: Add symbol 
 
 
 #define macro CONSTRUCTOR() = takes (0) returns (0) {
@@ -43,7 +37,6 @@ Memory map
     0x20 0x00 return   // Exit context, return 0x20=32 bytes from memory, starting at memory index 0x00 
 }
 
-
 #define macro ACCESS_ONLY_OWNER() = takes(0) returns (0) {
     [OWNER_SLOT] sload caller eq is_owner jumpi
         0x00 0x00 revert
@@ -55,36 +48,29 @@ Memory map
 	and
 }
 
-
 #define macro BALANCE_OF() = takes(0) returns(0) {
-    0x04 calldataload
-    ADDRESS_MASK()
-    0x00
-    mstore
-    0x40 0x00 sha3
-    sload
-    0x00
-    mstore
-    0x20 0x00 return
+    0x04 calldataload        // [address] + 96 bytes
+    ADDRESS_MASK()           // [address]
+    0x00                     // [0, address]
+    mstore                   // []
+    0x40 0x00 sha3           // [keccak256(balance, 0x00)]
+    sload                    // [Balance]
+    0x00                     // [0x00, Balance]
+    mstore                   // []
+    0x20 0x00 return         // []
 }
 
 #define macro TOTAL_SUPPLY() = takes(0) returns(0) {
-    [TOTAL_SUPPLY_SLOT]
+    [TOTAL_SUPPLY_SLOT]      
     sload
     0x00 mstore
     0x20 0x00 return
 }
 
-#define macro SET_NAME() = takes(0) returns(0) {
-    0x04 calldataload
-    [NAME_SLOT]
-    sstore
-}
-
 #define macro GET_NAME() = takes(0) returns(0) {
     0x20 0x00 mstore                    // []
-    [META_NAME_LENGTH] 0x20 mstore      // []
-    [META_NAME] 0x40 mstore             // []
+    [NAME_LENGTH] 0x20 mstore           // []
+    [NAME] 0x40 mstore                  // []
     0x60 0x00 return                    // []
 }
 
@@ -110,26 +96,26 @@ Memory map
 }
 
 #define macro TRANSFER_FROM() = takes(0) returns(0) {
-    0x04 calldataload
-    ADDRESS_MASK()
-    0x00
-    mstore
-    0x40 0x00 sha3
+    0x04 calldataload           // [from] + 96 bytes
+    ADDRESS_MASK()              // [from]
+    0x00                        // [0x00, from]
+    mstore                      // []
+    0x40 0x00 sha3              // [keccak256(from, 0x00)]
 
-    0x24 calldataload
-    ADDRESS_MASK()
-    0x00
-    mstore
-    0x40 0x00 sha3
+    0x24 calldataload           // [to + 96 bytes, keccak256(from, 0x00)]
+    ADDRESS_MASK()              // [to, keccak256(from, 0x00)]
+    0x00                        // [0x00, to, keccak256(from, 0x00)]
+    mstore                      // [keccak256(from, 0x00)]
+    0x40 0x00 sha3              // [keccak256(to, 0x00), keccak256(from, 0x00)]
     
-    0x04 calldataload
-    ADDRESS_MASK()
-    0x00
-    mstore
-    [ALLOWANCES_SLOT]
-    0x20
-    mstore
-    0x40 0x00 sha3 
+    0x04 calldataload           // [from + 96 bytes, keccak256(to, 0x00) , ...]
+    ADDRESS_MASK()              // [from, keccak256(to, 0x00) , keccak256(from, 0x00)]
+    0x00                        // [0x00, from, keccak256(to, 0x00) , keccak256(from, 0x00)]
+    mstore                      // [from, keccak256(to, 0x00) , keccak256(from, 0x00)]
+    [ALLOWANCES_SLOT]           // [0x03, from, keccak256(to, 0x00) , keccak256(from, 0x00)]
+    0x20                        // [0x03, from, keccak256(to, 0x00), ...]
+    mstore                      // [keccak256(to, 0x00) , keccak256(from, 0x00)]
+    0x40 0x00 sha3              // [keccak256(from, 0x03) keccak256(to, 0x00), keccak256(from, 0x00)]
     0x00 
     mstore
     0x24 calldataload
@@ -296,9 +282,7 @@ Memory map
     dup1 __FUNC_SIG(approve) eq approve jumpi
     dup1 __FUNC_SIG(allowance) eq allowance jumpi
     dup1 __FUNC_SIG(transferFrom) eq transferFrom jumpi
-    dup1 __FUNC_SIG(setName) eq set_name jumpi
     dup1 __FUNC_SIG(name) eq get_name jumpi
-    dup1 __FUNC_SIG(decimals) eq get_decimals jumpi
 
     throw_error:
         0x00 0x00 revert
@@ -323,10 +307,6 @@ Memory map
         ALLOWANCE()
     transferFrom:
         TRANSFER_FROM()
-    set_name:
-        SET_NAME()
     get_name:
         GET_NAME()
-    get_decimals:
-        // GET_DECIMALS()
 }

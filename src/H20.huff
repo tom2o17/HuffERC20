@@ -116,27 +116,24 @@ Memory map
     0x20                        // [0x03, from, keccak256(to, 0x00), ...]
     mstore                      // [keccak256(to, 0x00) , keccak256(from, 0x00)]
     0x40 0x00 sha3              // [keccak256(from, 0x03) keccak256(to, 0x00), keccak256(from, 0x00)]
-    0x00 
-    mstore
-    0x24 calldataload
-    0x20
-    mstore
-    0x40 0x00 sha3
-    
-    0x44 calldataload
-    dup1   
-    dup3    
-    sload   
-    sub     
-    dup2    
-    sload   
-    dup2
-    dup5
-    sstore
+    0x00                        // [0x00, keccak256(from, 0x03) keccak256(to, 0x00), keccak256(from, 0x00)]
+    mstore                      // [keccak256(to, 0x00), keccak256(from, 0x00)]
+    0x24 calldataload           // [address(to), keccak256(to, 0x00), keccak256(from, 0x00)]
+    0x20                        // [0x20, address(to), keccack256(to, 0x00), keccak256(from, 0x00)]
+    mstore                      // [ keccack256(to, 0x00), keccak256(from, 0x00)]
+    0x40 0x00 sha3              // [Allowances[owner][spender] location, keccack256(to, 0x00), keccack256(from, 0x00)]
 
-    dup3
-    dup7
-    sload 
+    0x44 calldataload           // [ amount, Allowances[owner][spender] location, balances[to] location, balanes[owner] location]
+    dup1                        // [ amount, ammount, Allowances[owner][spender], ...]
+    dup3 sload                  // [ Allowance granted value, amount, ...]
+    sub                         // [ allowance - amount, Allowances[owner][spender], ...]
+    dup2 sload                  // [ Allowance granted value, allowance - amount, Allowances[owner][spender], ...]
+    dup2                        // [ allowance - amount, Allowance granted value, allowance - amount, Allowances[owner][spender], balances[to] location, ...]
+    dup5                        // [ balances[to] location, allowance - amount, Allowance granted value, allowance - amount, Allowances[owner][spender], ...]
+    sstore                      // [ Allowance granted value, allowance - amount, Allowances[owner][spender], ...]
+
+    dup3                        // [ Allowances[owner][spender] location, Allowance granted value, allowance - amount, Allowances[owner][spender], ...]
+    dup7 sload                  // [ balance[owner],  Allowances[owner][spender] location, Allowance granted value, allowance - amount, Allowances[owner][spender], ...]
     sub 
     dup2
     dup2

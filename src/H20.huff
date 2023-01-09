@@ -286,13 +286,13 @@ Memory map
 
     // If the function sig is not recognized then this
     // is the default/fallback function.
+    mint:
+        ACCESS_ONLY_OWNER()
+        MINT_USER()
     get_owner:
         OWNABLE_GET_OWNER()
     get_balance:
         BALANCE_OF()
-    mint:
-        ACCESS_ONLY_OWNER()
-        MINT_USER()
     total_supply:
         TOTAL_SUPPLY()
     approve:

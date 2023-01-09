@@ -95,6 +95,7 @@ Memory map
     0x20 0x00 return
 }
 
+// Need to enforce a check on allowances
 #define macro TRANSFER_FROM() = takes(0) returns(0) {
     0x04 calldataload           // [from] + 96 bytes
     ADDRESS_MASK()              // [from]
@@ -138,8 +139,8 @@ Memory map
     dup2
     dup2
     gt
-    dup2
-    dup2
+    dup3
+    dup3
     eq 
     or
     pass2 jumpi

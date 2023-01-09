@@ -10,10 +10,10 @@ contract H20Test is Test {
 
     function setUp() public {
         instance = H20(HuffDeployer.deploy("H20"));
-        vm.startPrank(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246));
+        vm.startPrank(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f));
         instance.mint(1000);
         instance.mint(1000);
-        instance.approve(address(1), 10);
+        // instance.approve(address(1), 10);
         // instance.mint(1000);
         // vm.stopPrank();
         // vm.stopPrank();
@@ -25,37 +25,38 @@ contract H20Test is Test {
     }
 
     function testGetBalanceOf() public {
-        console.log(instance.balanceOf(address(1)));
+        console.log(instance.balanceOf(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f)));
     }
 
     function testMint() public {
-        // vm.startPrank(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246));
+        // vm.startPrank(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f));
         instance.mint(1000);
-        // console.log(instance.balanceOf(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246)));
+        // console.log(instance.balanceOf(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f)));
     }
 
 
     function testTotalSupply() public {
-        // vm.startPrank(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246));
+        // vm.startPrank(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f));
         // instance.mint(1000);
         console.log(instance.totalSupply());
     }
 
     function testTransfer() public {
-        // vm.startPrank(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246));
+        // vm.startPrank(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f));
         // instance.mint(1000);
         // instance.mint(1000);
         instance.transfer(address(1), 200);
-        console.log(instance.balanceOf(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246)));
+        console.log(instance.balanceOf(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f)));
         console.log(instance.balanceOf(address(1)));
     }
 
     function testTransferEdge() public {
-        // vm.startPrank(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246));
+        // vm.startPrank(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f));
         // instance.mint(1000);
         // instance.mint(1000);
         instance.transfer(address(1), 1000);
-        console.log(instance.balanceOf(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246)));
+        console.log(instance.balanceOf(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f)));
+        console.log(instance.balanceOf(address(1)));
     }
 
     function test_transferFrom() public {
@@ -63,59 +64,59 @@ contract H20Test is Test {
         
         vm.stopPrank();
         vm.prank(address(1));
-        instance.transferFrom(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246), address(1), 10);
+        instance.transferFrom(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f), address(1), 10);
         console.log(instance.balanceOf(address(1)));
-        console.log(instance.balanceOf(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246)));
+        console.log(instance.balanceOf(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f)));
     }
 
 
     function testTransferTooMuch() public {
-        // vm.startPrank(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246));
+        // vm.startPrank(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f));
         // instance.mint(1000);
         // instance.mint(1000);
         vm.expectRevert();
         instance.transfer(address(1), 200000);
-        console.log(instance.balanceOf(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246)));
+        console.log(instance.balanceOf(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f)));
     }
 
     function testApprove() public {
-        // vm.prank(0xCe71065D4017F316EC606Fe4422e11eB2c47c246);
+        // vm.prank(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f);
         instance.approve(address(1), 500);
-        // console.log(instance.allowance(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246), address(1)));
+        // console.log(instance.allowance(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f), address(1)));
     }
     function testApproveEdge() public {
-        // vm.startPrank(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246));
+        // vm.startPrank(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f));
         // instance.mint(1000);
         instance.approve(address(1), 1000);
-        console.log(instance.allowance(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246), address(1)));
+        console.log(instance.allowance(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f), address(1)));
     }
     function testApproveFail() public {
-        // vm.startPrank(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246));
+        // vm.startPrank(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f));
         // instance.mint(1000);
         vm.expectRevert();
         instance.approve(address(1), 5000);
-        console.log(instance.allowance(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246), address(1)));
+        console.log(instance.allowance(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f), address(1)));
     }
 
     // TODO fix this 
     function testTransferFrom() public {
-        // vm.startPrank(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246));
+        // vm.startPrank(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f));
         // instance.mint(1000);
-        console.log(instance.balanceOf(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246)));
+        console.log(instance.balanceOf(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f)));
         instance.approve(address(1), 500);
         vm.stopPrank();
-        console.log(instance.allowance(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246), address(1)));
+        console.log(instance.allowance(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f), address(1)));
         vm.prank(address(1));
-        instance.transferFrom(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246), address(1), 500);
+        instance.transferFrom(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f), address(1), 500);
         console.log("Should be 1500");
-        console.log(instance.balanceOf(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246)));
-        assert(instance.balanceOf(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246)) == 1500);
+        console.log(instance.balanceOf(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f)));
+        assert(instance.balanceOf(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f)) == 1500);
         console.log("Should be 500");
         console.log(instance.balanceOf(address(1)));
         assert(instance.balanceOf(address(1)) == 500);
         console.log("Should be 0");
-        console.log(instance.allowance(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246), address(1)));
-        console.log(instance.allowance(address(0xCe71065D4017F316EC606Fe4422e11eB2c47c246), address(1)) == 0);
+        console.log(instance.allowance(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f), address(1)));
+        console.log(instance.allowance(address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f), address(1)) == 0);
     }
 
     function testName() public {

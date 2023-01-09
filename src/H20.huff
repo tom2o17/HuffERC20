@@ -169,8 +169,8 @@ Memory map
     dup2
     dup2
     gt                // [0|1, balance, value, key]
-    dup2
-    dup2
+    dup3
+    dup3
     eq
     or pass jumpi
         0x00 0x00 revert
@@ -200,7 +200,7 @@ Memory map
     // // Check that the approval is less than the balance
     caller              // [msg.sender]
     0x00                // [0x00, msg.sender]
-    mstore              // []
+    mstore              // []~
     0x40 0x00 sha3      // [key]
     sload               // [balanceOf()]
     0x24 calldataload   // [value, balanceOf()]
@@ -286,7 +286,6 @@ Memory map
 
     // If the function sig is not recognized then this
     // is the default/fallback function.
-    TRANSFER_FROM()
     get_owner:
         OWNABLE_GET_OWNER()
     get_balance:
@@ -296,8 +295,6 @@ Memory map
         MINT_USER()
     total_supply:
         TOTAL_SUPPLY()
-    transfer:
-        TRANSFER()
     approve:
         APPROVE()
     allowance:
@@ -306,4 +303,6 @@ Memory map
         TRANSFER_FROM()
     get_name:
         GET_NAME()
+    transfer:
+        TRANSFER()
 }

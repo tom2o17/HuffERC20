@@ -1,4 +1,21 @@
-// The stack works in a first in last out order
+/// H20 -- a minimal, deliberately EVENT-LESS ERC20 written in Huff.
+///
+/// No LOG opcodes appear anywhere: no Transfer/Approval events are emitted. This is
+/// intentional, and means the token is not ERC20-compliant for off-chain indexers.
+///
+/// READING GUIDE
+/// Every step below is one line: opcodes, then `// [top, ..., bottom]` showing the
+/// stack AFTER that step, then an optional note. The EVM stack is last-in-first-out,
+/// so the LEFTMOST item in a stack comment is the top -- what the next opcode eats.
+///
+/// Three opcodes take their arguments in an order that reads backwards from the
+/// source, and they are used constantly below:
+///   sstore  pops KEY   then VALUE  -> stack must be [key, value, ...]
+///   mstore  pops OFFSET then VALUE -> stack must be [offset, value, ...]
+///   sha3    pops OFFSET then SIZE  -> `0x40 0x00 sha3` hashes mem[0x00..0x40)
+/// So `caller 0x00 mstore` writes msg.sender to memory offset 0x00, and
+/// `0x20 0x00 return` returns 32 bytes starting at memory offset 0x00.
+
 #define function owner() view returns (address)
 #define function balanceOf(address) view returns (uint256)
 #define function totalSupply() view returns (uint256)
@@ -14,319 +31,447 @@
 #define function name() view returns (string)
 #define function decimals() view returns (string)
 
-/*
-Memory map 
-0x00 - balances 
-0x01 - Owner slot
-*/
+/* ==========================================================================
+   STORAGE LAYOUT
 
-// We save marginal cas by having this be declared 0x00
+   slot 0x00  balances      mapping(address => uint256)     (mapping base)
+   slot 0x01  owner         address
+   slot 0x02  totalSupply   uint256
+   slot 0x03  allowances    mapping(address => mapping(address => uint256))
+   slot 0x04  name          written by SET_NAME, never read (see GET_NAME)
+
+   Derived slots follow the Solidity mapping convention, `.` being 32-byte concat:
+
+     balances[a]           = keccak256(a . BALANCES_SLOT)
+     allowance[owner][spd] = keccak256(spd . keccak256(owner . ALLOWANCES_SLOT))
+
+   ==========================================================================
+   MEMORY SCRATCH CONVENTION -- read this before touching any hash
+
+   mem[0x00..0x40) builds mapping-key preimages:
+
+     mem[0x00] = the key   (an address, or an inner hash for a nested mapping)
+     mem[0x20] = the slot  (the mapping base, or the outer hash)
+
+   then `0x40 0x00 sha3` hashes those 64 bytes.
+
+   THE TRAP: BALANCES_SLOT is 0x00, and memory starts zeroed on every external
+   call, so a balance key can be built by writing ONLY mem[0x00] and letting
+   mem[0x20] stay implicitly zero. BALANCE_OF, TRANSFER, MINT_USER and APPROVE all
+   rely on that. But building an ALLOWANCE key writes ALLOWANCES_SLOT and then the
+   spender into mem[0x20]. Any balance hash computed afterwards, without re-zeroing
+   mem[0x20], silently hashes to a different (garbage) slot.
+
+   So a macro that builds an allowance key before a balance key MUST write
+   `0x00 0x20 mstore` first. TRANSFER_FROM does. Every other macro is safe only
+   because it never mixes the two orders, and MAIN enters one handler per call.
+   ========================================================================== */
+
+// Declared 0x00 so balance keys can leave mem[0x20] implicitly zero (see above).
 #define constant BALANCES_SLOT = 0x00
 #define constant OWNER_SLOT = 0x01
 #define constant TOTAL_SUPPLY_SLOT = 0x02
 #define constant ALLOWANCES_SLOT = 0x03
 #define constant NAME_SLOT = 0x04
 
+// "Token", left-aligned in a 32-byte word, and its length.
 #define constant META_NAME = 0x546f6b656e000000000000000000000000000000000000000000000000000000
 #define constant META_NAME_LENGTH = 0x05
 
 
-
-
+/// Runs once at deployment. Records the deployer as owner.
+///   storage: writes OWNER_SLOT                            stack: net zero
+/// NOTE: under foundry-huff, `caller` here is the HuffConfig helper contract, not
+/// the test EOA -- tests must vm.store OWNER_SLOT after deploying.
 #define macro CONSTRUCTOR() = takes (0) returns (0) {
-    caller [OWNER_SLOT] sstore  // Store msg.sender as owner
+    caller              // [msg.sender]
+    [OWNER_SLOT]        // [0x01, msg.sender]
+    sstore              // []                    owner = msg.sender
 }
 
+
+/// owner() -> address.
+///   storage: reads OWNER_SLOT      memory: writes mem[0x00]      ends: return
 #define macro OWNABLE_GET_OWNER() = takes(0) returns(0) {
-    [OWNER_SLOT] sload // Load owner address from storage and push it to the stack
-    0x00 mstore        // Store owner to memeory at index 0x00
-    0x20 0x00 return   // Exit context, return 0x20=32 bytes from memory, starting at memory index 0x00 
+    [OWNER_SLOT]        // [0x01]
+    sload               // [owner]
+    0x00                // [0x00, owner]
+    mstore              // []                    mem[0x00] = owner
+    0x20 0x00 return    // return(offset=0x00, size=0x20)
 }
 
 
+/// Reverts unless msg.sender is the owner; falls through on success.
+///   storage: reads OWNER_SLOT                             stack: net zero
 #define macro ACCESS_ONLY_OWNER() = takes(0) returns (0) {
-    [OWNER_SLOT] sload caller eq is_owner jumpi
-        0x00 0x00 revert
-    is_owner:
+    [OWNER_SLOT]          // [0x01]
+    sload                 // [owner]
+    caller                // [msg.sender, owner]
+    eq                    // [owner == msg.sender]
+    is_owner jumpi        // []                    proceed if the caller is the owner
+        0x00 0x00 revert  //                       not the owner
+    is_owner:             // []
 }
 
+
+/// Truncates a word to its low 20 bytes. Applied to every address that feeds a hash
+/// preimage, so dirty upper bits cannot steer a lookup to a different slot.
 #define macro ADDRESS_MASK() = takes (1) returns (1) {
-	0x000000000000000000000000ffffffffffffffffffffffffffffffffffffffff
-	and
+    0x000000000000000000000000ffffffffffffffffffffffffffffffffffffffff  // [mask, x]
+    and                                                                 // [x & mask]
 }
 
 
+/// balanceOf(address account) -> uint256.
+///   calldata: 0x04 = account                              ends: return
+///   storage: reads balances[account]
+///   memory:  mem[0x00] = account, then mem[0x00] = balance; mem[0x20] stays 0
 #define macro BALANCE_OF() = takes(0) returns(0) {
-    0x04 calldataload
-    ADDRESS_MASK()
-    0x00
-    mstore
-    0x40 0x00 sha3
-    sload
-    0x00
-    mstore
-    0x20 0x00 return
+    0x04 calldataload   // [account]
+    ADDRESS_MASK()      // [account]
+    0x00                // [0x00, account]
+    mstore              // []                    mem[0x00] = account
+    0x40 0x00 sha3      // [balanceKey]          mem[0x20] is implicitly BALANCES_SLOT (0)
+    sload               // [balance]
+    0x00                // [0x00, balance]
+    mstore              // []                    mem[0x00] = balance
+    0x20 0x00 return    // return(offset=0x00, size=0x20)
 }
 
+
+/// totalSupply() -> uint256.
+///   storage: reads TOTAL_SUPPLY_SLOT   memory: writes mem[0x00]   ends: return
 #define macro TOTAL_SUPPLY() = takes(0) returns(0) {
-    [TOTAL_SUPPLY_SLOT]
-    sload
-    0x00 mstore
-    0x20 0x00 return
+    [TOTAL_SUPPLY_SLOT]  // [0x02]
+    sload                // [totalSupply]
+    0x00                 // [0x00, totalSupply]
+    mstore               // []                    mem[0x00] = totalSupply
+    0x20 0x00 return     // return(offset=0x00, size=0x20)
 }
 
+
+/// setName(string) -> ().
+///   calldata: 0x04 = the ABI head of the string argument   ends: stop (in MAIN)
+///   storage: writes NAME_SLOT                              stack: net zero
+/// KNOWN LIMITATION: for a dynamic `string`, calldata 0x04 holds the ABI offset to
+/// the string data (0x20), not the characters. So this stores 0x20, and GET_NAME
+/// ignores NAME_SLOT entirely and returns the META_NAME constant instead.
 #define macro SET_NAME() = takes(0) returns(0) {
-    0x04 calldataload
-    [NAME_SLOT]
-    sstore
+    0x04 calldataload   // [abiHead]
+    [NAME_SLOT]         // [0x04, abiHead]
+    sstore              // []                    name = abiHead
 }
 
+
+/// name() -> string. Hand-builds the ABI encoding of a dynamic string.
+///   memory: writes mem[0x00..0x60)                         ends: return
 #define macro GET_NAME() = takes(0) returns(0) {
-    0x20 0x00 mstore                    // []
-    [META_NAME_LENGTH] 0x20 mstore      // []
-    [META_NAME] 0x40 mstore             // []
-    0x60 0x00 return                    // []
+    0x20 0x00 mstore                // []                    mem[0x00] = 0x20  (offset to data)
+    [META_NAME_LENGTH] 0x20 mstore  // []                    mem[0x20] = 5     (length)
+    [META_NAME] 0x40 mstore         // []                    mem[0x40] = "Token"
+    0x60 0x00 return                // return(offset=0x00, size=0x60)
 }
 
+
+/// allowance(address owner, address spender) -> uint256.
+///   calldata: 0x04 = owner, 0x24 = spender                 ends: return
+///   storage: reads allowance[owner][spender]
+///   memory:  builds the nested key in mem[0x00..0x40), leaving mem[0x20] DIRTY --
+///            safe only because this macro returns immediately
+/// NOTE: the spender is not ADDRESS_MASK'd here, unlike in APPROVE. Harmless for
+/// ABI-encoded calldata, but a hand-crafted call with dirty upper bits would read a
+/// different slot than APPROVE wrote.
 #define macro ALLOWANCE() = takes(0) returns(0) {
-    0x04 calldataload
-    ADDRESS_MASK()
-    0x00
-    mstore
-    [ALLOWANCES_SLOT]
-    0x20
-    mstore
-    0x40 0x00 sha3 
-    0x00 
-    mstore
-    0x24 calldataload
-    0x20
-    mstore
-    0x40 0x00 sha3
-    sload
-    0x00 
-    mstore
-    0x20 0x00 return
-}
-
-#define macro TRANSFER_FROM() = takes(0) returns(0) {
-    0x04 calldataload
-    ADDRESS_MASK()
-    0x00
-    mstore
-    0x40 0x00 sha3
-
-    0x24 calldataload
-    ADDRESS_MASK()
-    0x00
-    mstore
-    0x40 0x00 sha3
-    
-    0x04 calldataload
-    ADDRESS_MASK()
-    0x00
-    mstore
-    [ALLOWANCES_SLOT]
-    0x20
-    mstore
-    0x40 0x00 sha3 
-    0x00 
-    mstore
-    0x24 calldataload
-    0x20
-    mstore
-    0x40 0x00 sha3
-    
-    0x44 calldataload
-    dup1   
-    dup3    
-    sload   
-    sub     
-    dup2    
-    sload   
-    dup2
-    dup5
-    sstore
-
-    dup3
-    dup7
-    sload 
-    sub 
-    dup2
-    dup2
-    gt
-    dup2
-    dup2
-    eq 
-    or
-    pass2 jumpi
-        0x00 0x00 revert
-    pass2:
-    dup7        
-    sstore 
-    dup3                
-    sload               
-    0x44 calldataload
-    add                 
-    dup6
-    sstore
-}
-
-
-#define macro TRANSFER() = takes(0) returns(0) {
-    // More efficient than computing the hash twice
-    0x24 calldataload // [value]
-    caller            // [msg.sender, value]
-    0x00              // [0x00, msg.sender, value]
-    mstore            // [value]
-    0x40 0x00 sha3    // [key, value]
-    swap1             // [value, key]
-    dup2              // [key, value, key]
-    sload             // [balance, value, key]
-    dup2
-    dup2
-    gt                // [0|1, balance, value, key]
-    dup2
-    dup2
-    eq
-    or pass jumpi
-        0x00 0x00 revert
-    pass:
-    dup1              // [balance, balance, value, key]
-    swap2             // [value, balance, balance, key]
-    swap1             // [balance, value, balance, key]
-    sub               // [balance - value, balance, key]
-    dup3             // [key, balance - value]
-    sstore
-
-    // Increment the receiver
-    0x04 calldataload // [address(to)]
-    0x00              // [ 0x00, Address(to)]
-    mstore            // []
-    0x40 0x00 sha3    // [ key ]
-    dup1              // [key, key]
-    sload             // [balanceOf(address(to)), key]
-    0x24 calldataload // [value, balanceOf(address(to)), key]
-    add               // [value + balanceOf(address(to)), key]
-    swap1              
-    sstore
-}
-
-
-#define macro APPROVE() = takes(0) returns(0) {
-    // // Check that the approval is less than the balance
-    caller              // [msg.sender]
-    0x00                // [0x00, msg.sender]
-    mstore              // []
-    0x40 0x00 sha3      // [key]
-    sload               // [balanceOf()]
-    0x24 calldataload   // [value, balanceOf()]
-    dup2                // [balanceOf(), value, balanceOf()]
-    dup2                // [value, balanceOf(), value, balanceOf()]
-    lt                  // [0|1, value, balanceOf()] 
-    dup3                // [balanceOf(), 0|1, value, balanceOf()]
-    dup3                // [value, balanceOf(), 0|1, value, balanceOf()]
-    eq                  // [0|1, 0|1, value, balanceOf()]
-    or                  
-    pass jumpi
-        0x00 revert
-    pass:               // []
-    // Increment the users allowance
-    caller              // [msg.sender]
-    0x00                // [0x00, msg.sender]
-    mstore              // []
+    0x04 calldataload   // [owner]
+    ADDRESS_MASK()      // [owner]
+    0x00                // [0x00, owner]
+    mstore              // []                    mem[0x00] = owner
     [ALLOWANCES_SLOT]   // [0x03]
-    0x20                //[0x20 , 0x03]
-    mstore              //[]
-    0x40 0x00 sha3      // [ key ]
-    0x00 
-    mstore              //[]
-    0x04 calldataload
-    ADDRESS_MASK()
-    0x20
-    mstore
-    0x40 0x00 sha3      // [ key2 ]
-
-    dup1                // [key2, key2]
-    sload               // [balancOf, key2]
-    0x24 calldataload   // [value, balanceOf, key2]
-    add                 // [value + balance, key2]
-    swap1
-    sstore
+    0x20                // [0x20, 0x03]
+    mstore              // []                    mem[0x20] = ALLOWANCES_SLOT
+    0x40 0x00 sha3      // [inner]               inner = keccak(owner . ALLOWANCES_SLOT)
+    0x00                // [0x00, inner]
+    mstore              // []                    mem[0x00] = inner
+    0x24 calldataload   // [spender]             unmasked -- see the note above
+    0x20                // [0x20, spender]
+    mstore              // []                    mem[0x20] = spender
+    0x40 0x00 sha3      // [allowanceKey]        keccak(spender . inner)
+    sload               // [allowance]
+    0x00                // [0x00, allowance]
+    mstore              // []                    mem[0x00] = allowance
+    0x20 0x00 return    // return(offset=0x00, size=0x20)
 }
 
 
+/// transferFrom(address from, address to, uint256 value) -> ().
+///   calldata: 0x04 = from, 0x24 = to, 0x44 = value         ends: stop (in MAIN)
+///   storage: writes allowance[from][msg.sender], balances[from], balances[to]
+///   memory:  reuses mem[0x00..0x40) for all three keys
+///   stack:   net zero -- each phase cleans up after itself
+///
+/// Three independent phases rather than one interleaved block. Each phase computes
+/// its own key, uses it immediately, and leaves a clean stack, so nothing is ever
+/// reached more than 3 deep. Holding all three keys at once while juggling
+/// temporaries is what makes this function easy to get wrong.
+///
+/// MEMORY: phase 1 dirties mem[0x20] with ALLOWANCES_SLOT and then the spender, so
+/// phases 2 and 3 re-zero mem[0x20] before hashing (see the scratch convention at
+/// the top of this file). That keeps the three phases order-independent.
+#define macro TRANSFER_FROM() = takes(0) returns(0) {
+    0x04 calldataload     // [from]                            PHASE 1: allowance[from][msg.sender] -= value
+    ADDRESS_MASK()        // [from]
+    0x00                  // [0x00, from]
+    mstore                // []                                mem[0x00] = from
+    [ALLOWANCES_SLOT]     // [0x03]
+    0x20                  // [0x20, 0x03]
+    mstore                // []                                mem[0x20] = ALLOWANCES_SLOT
+    0x40 0x00 sha3        // [inner]                           inner = keccak(from . ALLOWANCES_SLOT)
+    0x00                  // [0x00, inner]
+    mstore                // []                                mem[0x00] = inner
+    caller                // [msg.sender]                      the spender is the CALLER, never `to`
+    0x20                  // [0x20, msg.sender]
+    mstore                // []                                mem[0x20] = msg.sender
+    0x40 0x00 sha3        // [allowanceKey]                    keccak(msg.sender . inner)
+    dup1                  // [allowanceKey, allowanceKey]
+    sload                 // [allowance, allowanceKey]
+    0x44 calldataload     // [value, allowance, allowanceKey]
+    dup2                  // [allowance, value, allowance, allowanceKey]
+    dup2                  // [value, allowance, value, allowance, allowanceKey]
+    gt                    // [value > allowance, value, allowance, allowanceKey]
+    iszero                // [value <= allowance, value, allowance, allowanceKey]
+    allowance_ok jumpi    // [value, allowance, allowanceKey]
+        0x00 0x00 revert  //                                   allowance too small
+    allowance_ok:         // [value, allowance, allowanceKey]
+    swap1                 // [allowance, value, allowanceKey]
+    sub                   // [allowance - value, allowanceKey] guarded, cannot underflow
+    swap1                 // [allowanceKey, allowance - value]
+    sstore                // []                                allowance[from][msg.sender] = new
 
+    0x04 calldataload     // [from]                            PHASE 2: balances[from] -= value
+    ADDRESS_MASK()        // [from]
+    0x00                  // [0x00, from]
+    mstore                // []                                mem[0x00] = from
+    0x00                  // [0x00]                            value to store...
+    0x20                  // [0x20, 0x00]                      ...at offset 0x20
+    mstore                // []                                mem[0x20] = BALANCES_SLOT (undo phase 1)
+    0x40 0x00 sha3        // [fromKey]
+    dup1                  // [fromKey, fromKey]
+    sload                 // [balance, fromKey]
+    0x44 calldataload     // [value, balance, fromKey]
+    dup2                  // [balance, value, balance, fromKey]
+    dup2                  // [value, balance, value, balance, fromKey]
+    gt                    // [value > balance, value, balance, fromKey]
+    iszero                // [value <= balance, value, balance, fromKey]
+    balance_ok jumpi      // [value, balance, fromKey]
+        0x00 0x00 revert  //                                   balance too small
+    balance_ok:           // [value, balance, fromKey]
+    swap1                 // [balance, value, fromKey]
+    sub                   // [balance - value, fromKey]        guarded, cannot underflow
+    swap1                 // [fromKey, balance - value]
+    sstore                // []                                balances[from] = new
+
+    0x24 calldataload     // [to]                              PHASE 3: balances[to] += value
+    ADDRESS_MASK()        // [to]
+    0x00                  // [0x00, to]
+    mstore                // []                                mem[0x00] = to
+    0x00                  // [0x00]
+    0x20                  // [0x20, 0x00]
+    mstore                // []                                mem[0x20] = 0 (defensive; already zero)
+    0x40 0x00 sha3        // [toKey]
+    dup1                  // [toKey, toKey]
+    sload                 // [balanceOf(to), toKey]
+    0x44 calldataload     // [value, balanceOf(to), toKey]
+    add                   // [balanceOf(to) + value, toKey]
+    swap1                 // [toKey, balanceOf(to) + value]
+    sstore                // []                                balances[to] = new
+}
+
+
+/// transfer(address to, uint256 value) -> ().
+///   calldata: 0x04 = to, 0x24 = value                      ends: stop (in MAIN)
+///   storage: writes balances[msg.sender], balances[to]
+///   memory:  mem[0x00] = msg.sender, later mem[0x00] = to; mem[0x20] stays 0
+///   stack:   leaves 2 junk words -- harmless, `stop` discards them
+///
+/// !!! KNOWN BUG: the sufficiency guard is wrong. After `gt` the stack is
+/// !!! [flag, balance, value, key], so `dup2 dup2 eq` compares the FLAG against
+/// !!! `balance` instead of `balance` against `value`. The equality arm therefore
+/// !!! only fires when balance is 0 or 1. Two consequences: transferring your EXACT
+/// !!! balance reverts, and an account with balance 0 PASSES the guard and
+/// !!! underflows `sub`, minting tokens from nothing. Fix: `dup2 dup2` -> `dup3
+/// !!! dup3`. Left unfixed here because it is outside the transferFrom work.
+///
+/// NOTE: `to` is not ADDRESS_MASK'd, unlike in TRANSFER_FROM.
+#define macro TRANSFER() = takes(0) returns(0) {
+    0x24 calldataload     // [value]                           balances[msg.sender] -= value
+    caller                // [msg.sender, value]
+    0x00                  // [0x00, msg.sender, value]
+    mstore                // [value]                           mem[0x00] = msg.sender
+    0x40 0x00 sha3        // [fromKey, value]
+    swap1                 // [value, fromKey]
+    dup2                  // [fromKey, value, fromKey]
+    sload                 // [balance, value, fromKey]
+    dup2                  // [value, balance, value, fromKey]
+    dup2                  // [balance, value, balance, value, fromKey]
+    gt                    // [balance > value, balance, value, fromKey]
+    dup2                  // [balance, flag, balance, value, fromKey]
+    dup2                  // [flag, balance, flag, balance, value, fromKey]
+    eq                    // [flag == balance, flag, balance, value, fromKey] BUG -- see header
+    or                    // [pass?, flag, balance, value, fromKey]
+    pass jumpi            // [flag, balance, value, fromKey]
+        0x00 0x00 revert  //                                   balance too small (or exactly equal -- bug)
+    pass:                 // [flag, balance, value, fromKey]
+    dup1                  // [flag, flag, balance, value, fromKey]
+    swap2                 // [balance, flag, flag, value, fromKey]
+    swap1                 // [flag, balance, flag, value, fromKey]
+    sub                   // [balance - value, flag, value, fromKey]
+    dup3                  // [fromKey, balance - value, flag, value, fromKey]
+    sstore                // [flag, fromKey]                   balances[msg.sender] = new; 2 junk words left
+    0x04 calldataload     // [to, flag, fromKey]               balances[to] += value
+    0x00                  // [0x00, to, flag, fromKey]
+    mstore                // [flag, fromKey]                   mem[0x00] = to
+    0x40 0x00 sha3        // [toKey, flag, fromKey]
+    dup1                  // [toKey, toKey, flag, fromKey]
+    sload                 // [balanceOf(to), toKey, flag, fromKey]
+    0x24 calldataload     // [value, balanceOf(to), toKey, flag, fromKey]
+    add                   // [balanceOf(to) + value, toKey, flag, fromKey]
+    swap1                 // [toKey, balanceOf(to) + value, flag, fromKey]
+    sstore                // [flag, fromKey]                   balances[to] = new
+}
+
+
+/// approve(address spender, uint256 value) -> ().
+///   calldata: 0x04 = spender, 0x24 = value                 ends: stop (in MAIN)
+///   storage: reads balances[msg.sender], writes allowance[msg.sender][spender]
+///   memory:  mem[0x00] = msg.sender for the balance read, then the nested
+///            allowance key is built in mem[0x00..0x40)
+///   stack:   leaves 2 junk words -- harmless, `stop` discards them
+///
+/// NOTE: this INCREMENTS the allowance rather than setting it, which is not ERC20
+/// behaviour. Deliberate, and the tests are written against it.
+/// NOTE: approving more than your current balance reverts. Also non-standard.
+/// NOTE: the failure path is `0x00 revert` with `value` still on the stack, so it
+/// reverts with return-data size = value. It does revert, but a huge `value` makes
+/// it run out of gas on memory expansion rather than fail cleanly. `0x00 0x00
+/// revert` would be correct.
+#define macro APPROVE() = takes(0) returns(0) {
+    caller              // [msg.sender]                    guard: value must be <= balances[msg.sender]
+    0x00                // [0x00, msg.sender]
+    mstore              // []                              mem[0x00] = msg.sender
+    0x40 0x00 sha3      // [balanceKey]
+    sload               // [balance]
+    0x24 calldataload   // [value, balance]
+    dup2                // [balance, value, balance]
+    dup2                // [value, balance, value, balance]
+    lt                  // [value < balance, value, balance]
+    dup3                // [balance, lt, value, balance]
+    dup3                // [value, balance, lt, value, balance]
+    eq                  // [value == balance, lt, value, balance]
+    or                  // [value <= balance, value, balance]
+    pass jumpi          // [value, balance]
+        0x00 revert     // [0x00, value, balance]          reverts with size = value -- see header
+    pass:               // [value, balance]
+    caller              // [msg.sender, value, balance]    allowance[msg.sender][spender] += value
+    0x00                // [0x00, msg.sender, value, balance]
+    mstore              // [value, balance]                mem[0x00] = msg.sender
+    [ALLOWANCES_SLOT]   // [0x03, value, balance]
+    0x20                // [0x20, 0x03, value, balance]
+    mstore              // [value, balance]                mem[0x20] = ALLOWANCES_SLOT
+    0x40 0x00 sha3      // [inner, value, balance]         keccak(msg.sender . ALLOWANCES_SLOT)
+    0x00                // [0x00, inner, value, balance]
+    mstore              // [value, balance]                mem[0x00] = inner
+    0x04 calldataload   // [spender, value, balance]
+    ADDRESS_MASK()      // [spender, value, balance]
+    0x20                // [0x20, spender, value, balance]
+    mstore              // [value, balance]                mem[0x20] = spender
+    0x40 0x00 sha3      // [allowanceKey, value, balance]  keccak(spender . inner)
+    dup1                // [allowanceKey, allowanceKey, value, balance]
+    sload               // [allowance, allowanceKey, value, balance]
+    0x24 calldataload   // [value, allowance, allowanceKey, value, balance]
+    add                 // [allowance + value, allowanceKey, value, balance]
+    swap1               // [allowanceKey, allowance + value, value, balance]
+    sstore              // [value, balance]                2 junk words left for `stop`
+}
+
+
+/// mint(uint256 value) -> (). Owner-only; MAIN runs ACCESS_ONLY_OWNER first.
+///   calldata: 0x04 = value                                 ends: stop (in MAIN)
+///   storage: writes balances[msg.sender], TOTAL_SUPPLY_SLOT
+///   memory:  mem[0x00] = msg.sender; mem[0x20] stays 0     stack: net zero
+/// NOTE: neither `add` is overflow-checked. Safe only because minting is gated.
 #define macro MINT_USER() = takes(0) returns(0) {
-    caller 
-    0x00   
-    mstore
-    0x40 0x00 sha3 
-    dup1
-    sload // [balanceOf[caller], key]
-    0x04 calldataload
-    add // [balanceOf[caller] + value, key]
-    swap1
-    sstore
-
- 
-    // More efficient solution
-    // Increment balance of TS
-    [TOTAL_SUPPLY_SLOT] // [0x02]
-    sload               // [Ts val, 0x02 ]
-    0x04 calldataload   //[value, TS val, 0x02] 
-    add                 // [new TS, 0x02]
-    [TOTAL_SUPPLY_SLOT]
-    sstore
+    caller               // [msg.sender]          `caller` is always clean, no mask needed
+    0x00                 // [0x00, msg.sender]
+    mstore               // []                    mem[0x00] = msg.sender
+    0x40 0x00 sha3       // [balanceKey]
+    dup1                 // [balanceKey, balanceKey]
+    sload                // [balance, balanceKey]
+    0x04 calldataload    // [value, balance, balanceKey]
+    add                  // [balance + value, balanceKey]
+    swap1                // [balanceKey, balance + value]
+    sstore               // []                    balances[msg.sender] += value
+    [TOTAL_SUPPLY_SLOT]  // [0x02]                bump total supply by the same amount
+    sload                // [totalSupply]
+    0x04 calldataload    // [value, totalSupply]
+    add                  // [totalSupply + value]
+    [TOTAL_SUPPLY_SLOT]  // [0x02, totalSupply + value]
+    sstore               // []                    totalSupply += value
 }
 
 
-
-
+/// Entry point. Reads the 4-byte selector and jumps to the matching handler.
+///
+/// The selector stays on the stack for the whole dispatch chain -- each `dup1`
+/// preserves it for the next comparison -- and is simply abandoned once a handler is
+/// entered, since every handler terminates the call.
+///
+/// CONTROL FLOW: the handler labels sit contiguously in the bytecode, so a handler
+/// that does not terminate falls straight through into the NEXT one. Every handler
+/// must therefore end in `return`, `revert`, or an explicit `stop`. Omitting one is
+/// silent and destructive: without them, `transfer` used to run on into APPROVE
+/// (granting an allowance on every transfer) and `transferFrom` into SET_NAME
+/// (clobbering NAME_SLOT with the `from` address).
 #define macro MAIN() = takes (0) returns (0) {
-    // callvalue throw_error jumpi // Revert if eth send
-
-    0x00 calldataload 0xE0 shr // Get function signature
-
-    dup1 __FUNC_SIG(owner) eq get_owner jumpi
-    dup1 __FUNC_SIG(balanceOf) eq get_balance jumpi
-    dup1 __FUNC_SIG(mint) eq mint jumpi
-    dup1 __FUNC_SIG(totalSupply) eq total_supply jumpi
-    dup1 __FUNC_SIG(transfer) eq transfer jumpi
-    dup1 __FUNC_SIG(approve) eq approve jumpi
-    dup1 __FUNC_SIG(allowance) eq allowance jumpi
-    dup1 __FUNC_SIG(transferFrom) eq transferFrom jumpi
-    dup1 __FUNC_SIG(setName) eq set_name jumpi
-    dup1 __FUNC_SIG(name) eq get_name jumpi
-    dup1 __FUNC_SIG(decimals) eq get_decimals jumpi
-
-    throw_error:
+    0x00 calldataload 0xE0 shr                           // [selector]            top 4 bytes of calldata
+    dup1 __FUNC_SIG(owner) eq get_owner jumpi            // [selector]
+    dup1 __FUNC_SIG(balanceOf) eq get_balance jumpi      // [selector]
+    dup1 __FUNC_SIG(mint) eq mint jumpi                  // [selector]
+    dup1 __FUNC_SIG(totalSupply) eq total_supply jumpi   // [selector]
+    dup1 __FUNC_SIG(transfer) eq transfer jumpi          // [selector]
+    dup1 __FUNC_SIG(approve) eq approve jumpi            // [selector]
+    dup1 __FUNC_SIG(allowance) eq allowance jumpi        // [selector]
+    dup1 __FUNC_SIG(transferFrom) eq transferFrom jumpi  // [selector]
+    dup1 __FUNC_SIG(setName) eq set_name jumpi           // [selector]
+    dup1 __FUNC_SIG(name) eq get_name jumpi              // [selector]
+    dup1 __FUNC_SIG(decimals) eq get_decimals jumpi      // [selector]
+    throw_error:                                         // [selector]            no match; no fallback fn
         0x00 0x00 revert
-
-    // If the function sig is not recognized then this
-    // is the default/fallback function.
-    TRANSFER_FROM()
-    get_owner:
+    get_owner:                                           //                       ends: return
         OWNABLE_GET_OWNER()
-    get_balance:
+    get_balance:                                         //                       ends: return
         BALANCE_OF()
-    mint:
+    mint:                                                //                       ends: stop
         ACCESS_ONLY_OWNER()
         MINT_USER()
-    total_supply:
+        stop
+    total_supply:                                        //                       ends: return
         TOTAL_SUPPLY()
-    transfer:
+    transfer:                                            //                       ends: stop
         TRANSFER()
-    approve:
+        stop
+    approve:                                             //                       ends: stop
         APPROVE()
-    allowance:
+        stop
+    allowance:                                           //                       ends: return
         ALLOWANCE()
-    transferFrom:
+    transferFrom:                                        //                       ends: stop
         TRANSFER_FROM()
-    set_name:
+        stop
+    set_name:                                            //                       ends: stop
         SET_NAME()
-    get_name:
+        stop
+    get_name:                                            //                       ends: return
         GET_NAME()
-    get_decimals:
-        // GET_DECIMALS()
+    get_decimals:                                        //                       ends: stop
+        stop
 }

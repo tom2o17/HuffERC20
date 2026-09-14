@@ -1,0 +1,38 @@
+# Installs the pnpm-managed Solidity dependencies, the Foundry toolchain and the Huff
+# compiler, then builds the project and runs the forge test suite.
+name: CI
+on:
+  push:
+    branches: main
+  pull_request:
+jobs:
+  test:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # pnpm version is read from the "packageManager" field in package.json.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      # huff-rs (the original `huffc`) is archived and ships no binaries, and its official
+      # successor huff2 has no release yet. huff-neo is the maintained drop-in fork; its
+      # `hnc` binary is what foundry-huff-neo invokes. Pinned so CI is reproducible.
+      - name: Install Huff compiler
+        uses: cakevm/huff-neo-toolchain@v1
+        with:
+          version: 1.5.17
+      - run: hnc --version
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Unlicense
 pragma solidity ^0.8.15;
 
-import "foundry-huff/HuffDeployer.sol";
+import {HuffNeoDeployer} from "foundry-huff-neo/HuffNeoDeployer.sol";
 import "forge-std/Test.sol";
-import "lib/forge-std/src/console.sol";
+import "forge-std/console.sol";
 
 contract H20Test is Test {
     H20 instance;
@@ -18,7 +18,7 @@ contract H20Test is Test {
     address constant RECIPIENT = address(0xCAFE);
 
     function setUp() public {
-        instance = H20(HuffDeployer.deploy("H20"));
+        instance = H20(HuffNeoDeployer.deploy("src/H20.huff"));
         vm.store(address(instance), bytes32(OWNER_SLOT), bytes32(uint256(uint160(OWNER))));
         vm.startPrank(OWNER);
         instance.mint(1000);

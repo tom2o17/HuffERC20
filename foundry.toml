@@ -1,12 +1,17 @@
 
 [profile.default]
-solc_version = '0.8.15'
+solc_version = '0.8.37'
 auto_detect_solc = false
 optimizer = true
 optimizer_runs = 200 # Default amount
-ffi = true
-fuzz_runs = 1_000
+ffi = true # required: foundry-huff-neo shells out to the `hnc` Huff compiler
+# foundry-huff-neo compiles Huff for osaka by default; keep the test EVM in sync.
+evm_version = "osaka"
+# Solidity dependencies are installed by pnpm (see package.json) into node_modules/.
 remappings = [
-  "forge-std=lib/forge-std/src/",
-  "foundry-huff=lib/foundry-huff/src/",
+  "forge-std/=node_modules/forge-std/src/",
+  "foundry-huff-neo/=node_modules/foundry-huff-neo/src/",
 ]
+
+[fuzz]
+runs = 1_000

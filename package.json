@@ -1,0 +1,15 @@
+{
+  "name": "h20",
+  "version": "1.0.0",
+  "private": true,
+  "description": "H20 -- a minimal ERC20 written in Huff",
+  "packageManager": "pnpm@12.4.1",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test"
+  },
+  "devDependencies": {
+    "forge-std": "github:foundry-rs/forge-std#v1.16.2",
+    "foundry-huff-neo": "github:cakevm/foundry-huff-neo#0d07c9895ea42dedf4607351b185830a0d3b0430"
+  }
+}
